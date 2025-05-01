@@ -1,0 +1,128 @@
+According to the general naming convention for administrative units in Korea:
+
+Urban areas end in ~~ si, gu, dong.
+
+Rural areas end in ~~ do, gun, eup, myeon, ri.
+
+In the National Health Insurance Service (NHIS) data, this classification is somewhat complicated and cannot be classified. For example, Gyeonggi-do has a very large and complex administrative structure. According to the naming convention, Gyeonggi-do ends in 'do', making it look like 'rural' (RVSN_ADDR_CD = 41). However, it includes many cities as its subordinate administrative units, such as Suwon, Seongnam, and Uijeongbu.
+
+The actual residence data in NHIS is not a single variable like [RVSN_ADDR_CD], but a combination of several variables. In many cases, areas ending in 'do' at the first level end in 'si' at the second level. As in the example just given, if we end the screening at level 1 for 'Gyeonggi-do Suwon-si', the area will be misclassified as 'rural'. Suwon-si is a city with a population of over 1 million.
+
+I have classified an area as urban if I can confirm the basis for urban classification by screening up to level 2.
+
+  
+/*New definition of region*/
+/*import the region table*/
+libname region xlsx "/userdata08/room373/data_source/Hung/Region.xlsx";
+
+/*to create the region table, left join with the full table bfc to get the RVSN_ADDR_CD value, */
+/*		get the SIDO_CD and SGG_NM by futher left join with region.Sheet1*/
+
+proc sql;
+create table region as
+select a.*,b.age, b.RVSN_ADDR_CD, c.SIDO_CD,c.SGG_NM
+from a.sip_2_u as a
+left join a.t20_0323_5yr as b
+	on a.INDI_DSCM_NO=b.INDI_DSCM_NO and year(a.index_date) = b.BFC_year
+left join region.Sheet1 as c
+on substr(b.RVSN_ADDR_CD,1,5) = substr(c.SIDO_SGG_CD,1,5);
+quit;
+proc sort data= region;
+by INDI_DSCM_NO index_date;
+run; 
+proc sort data= region nodupkey out= region_u;
+by INDI_DSCM_NO;
+run; 
+/*create the data region : if SGG_NM of area_full in case of rural has gu or dong or si then redefine as urban; */
+data a.region_cd; set region_u;
+if substr(SIDO_CD, 1, 2) in ('11','26','27','28','29','30','31', '36') then area_full = 'urban'; else area_full ='rural';
+if index(SGG_NM, '  ') > 0  or index(SGG_NM, '  ') > 0  or index(SGG_NM, '  ') > 0  then area_detail = 'urban'; 
+	else area_detail = 'rural';
+if area_full = 'urban' or area_detail = 'urban' then region = 'urban'; else region = '1';
+run;
+
+/*Create the final data*/
+%macro data(F);
+proc sql;
+create table fu_&F as
+select a.INDI_DSCM_NO, a.index_date, a.psy_ser, a.time, a.event, a.FEP_event, a.area,
+		a.income_cate, a.GAIBJA_TYPE, a.final_F, a.sex_type, a.length_h, a.MAIN_DSB_TYPE, b.co_soma, c.co_men,
+		d.age, d.region
+		from a.c2_fu_&F as a
+		left join a.soma as b
+		on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+		left join a.comen as c
+		on a.INDI_DSCM_NO = c.INDI_DSCM_NO
+		left join a.region_cd as d
+		on a.INDI_DSCM_NO = d.INDI_DSCM_NO;
+quit;
+data u_&F;
+	set fu_&F (rename=(co_men = men co_soma =soma psy_ser=psy_se_1yr area = area_c income_cate= income_c 
+		GAIBJA_TYPE = insurance_type final_F=FESIP));
+/*create FEP_event_cate*/
+if upcase(substr(FEP_event,1,2)) = "F2" then FEP_event_cate='2_SSD'; 
+		else if upcase(substr(FEP_event,1,2)) = "F3" then FEP_event_cate='3_BP';
+		else FEP_event_cate='1_No';
+		length final_F income_low_demo GAIBJA_TYPE $20;
+if FESIP = "F105" then final_F = '1';
+		else if FESIP = "F115" then final_F = '1_Opioids';
+		else if FESIP = "F125" then final_F = '2_Cannabis';
+		else if FESIP = "F135" then final_F = '3_Sedatives';
+		else if FESIP = "F145" then final_F = '4_Cocaines';
+		else if FESIP = "F155" then final_F = '5_Other stimulants';
+		else if FESIP = "F165" then final_F = '6_Hallucinogens';
+		else if FESIP = "F175" then final_F = '7_Tobacco';
+		else if FESIP = "F185" then final_F = '8_Volatile';
+		else if FESIP = "F195" then final_F = '9_Multi';
+		else final_F = '9';
+	/*	set the db_cate = no as ref*/
+	if MAIN_DSB_TYPE ^=. then db_cate ="Yes"; else db_cate ="1";
+/*    create event category variable*/
+	length event_cate $10 co_men co_soma $3;
+	if event=1 then event_cate="covert"; else event_cate="noncovert";
+	if men=0 then co_men="1"; else co_men="Yes";
+	/*	set the sex = Male as ref*/
+	if sex_type ="Male"  then sex="1"; else sex="F";
+/*	change the psy_ser= 0 as ref*/
+	if psy_se_1yr=1 then psy_ser="Yes"; else psy_ser="1";
+/*	change the area = 2; rural as ref*/
+		length area $10;
+	if area_c=2 then area="1"; else if area_c=1 then area="2_urban"; else area="3_others";
+	if soma=0 then co_soma="1"; else co_soma="Yes";
+/*		set oldest age as the reference*/
+if 18 <= age <= 20 then age_cate = "18 <= age <= 20";
+		else if 20 < age <= 30 then age_cate ="20 < age <= 30";
+		else if 30 < age <= 40 then age_cate ="30 < age <= 40";
+		else if 40 < age <= 50 then age_cate ="40 < age <= 50";
+		else if 50 < age <= 60 then age_cate ="50 < age <= 60";
+/*		check demographic from lowest age to highest*/
+if 18 <= age <= 30 then age_low_demo = "4_18 <= age <= 30";
+		else if 30 < age <= 40 then age_low_demo ="3_30 < age <= 40";
+		else if 40 <= age <= 50 then age_low_demo ="2_40 <= age <= 50";
+		else if 50 <= age <= 60 then age_low_demo ="1";
+/*		set highest income as reference*/
+ income_cate =	income_c;
+	/*	check demographic from lowest income to highest*/
+If income_c= 5 then income_low_demo= "Q5(lowest)";
+	else if income_c= 4 then income_low_demo= "Q4";
+	else if income_c= 3 then income_low_demo= "Q3";
+	else if income_c= 2 then income_low_demo= "Q2";
+	else if income_c= 1 then income_low_demo= "1";
+	else income_low_demo= "Unknown";
+/*treat medical aid as 3 category and set employed as ref*/
+/*	"1" as employed*/
+if insurance_type in ('5', '6') then GAIBJA_TYPE= '1';
+/*	"2" as unemployed*/
+	else if insurance_type in ('1', '2') then GAIBJA_TYPE="unemployed";
+/*	"3" as medical aid*/
+	else GAIBJA_TYPE="medical aid";
+	Keep INDI_DSCM_NO age age_cate length_h time event event_cate FEP_event_cate final_F GAIBJA_TYPE co_men
+			db_cate co_soma income_low_demo age_low_demo area Sex psy_ser sex_type FEP_event MAIN_DSB_TYPE region;
+run;
+%mend;
+%data(SIP2);%data(SIP2_FEP);%data(SIP2_BP);
+
+
+
+
+
