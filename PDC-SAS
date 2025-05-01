@@ -1,0 +1,209 @@
+/*Calculate the PDC of antipsychotics, treatment of side effect of antipsychotics, antidepressants, and anxiolytics*/
+data a.PDC_med_list;
+set med_book.sheet1;
+med = substr(ÁÖ¼ººÐÄÚµå,1,6);
+if anti in ("Antipsychotics","Treatments of side effect of Antipsychotics","Antidepressants","Anxiolytics");;
+run;
+/*N =181°³*/
+proc sort data=a.PDC_med_list; by med; run;
+proc sort data=a.PDC_med_list nodupkey; by med; run;
+/*N =163°³*/
+
+proc sql;
+	create table a.PDC_med as
+	select a.INDI_DSCM_NO, a.CMN_KEY,a.index_date,  a.MCARE_DIV_CD_ADJ, a.DD1_MQTY_FREQ, a.TOT_MCNT, a.fu_date, 
+			a.MPRSC_DD1_TUYAK_CPCT, a.FORM_CD, a.VSHSP_DD_CNT
+	from a.F_0323 as a
+	inner join a.PDC_med_list as b
+	on upcase(substr(a.MCARE_DIV_CD_ADJ,1,6)) = b.med
+	group by a.INDI_DSCM_NO, a.fu_date;
+quit;
+
+/*Create the start date and end date for each year*/
+/*the PDC have to calculate for each year therefore:*/
+/*	assign follow-up date like 0-1, 1-2, 2-3, 3-4, 4-5
+	PDC date as index_date +1; +2,...+5 *365.25*/
+%macro year( n, a,b);
+data PDC_med_&n;
+	set a.PDC_med;
+	format start_date1 end_date end_date1 end_PDC_date_&n mmddyy10.;
+	end_PDC_date_&n = index_date + 365.25*&b;
+	if index_date + 365.25*&a <=  fu_date < index_date + 365.25*&b;
+	/*calculate inpatient periods by each follow up year*/
+	if FORM_CD in ('02','07','10') then pat_cate_&n = 'in'; else pat_cate_&n = 'out';
+    if pat_cate_&n = 'in' then inpatient_days_&n = VSHSP_DD_CNT; else inpatient_days_&n = 0;
+	end_date = fu_date + TOT_MCNT;
+
+	by INDI_DSCM_NO;
+
+	retain start_date1 end_date1;
+	if first.INDI_DSCM_NO then do;
+		start_date1 =  fu_date;
+		end_date1 = min(end_date,end_PDC_date_&n);
+		end;
+
+	else if fu_date < end_date1 then do;
+		start_date1 =  start_date1;
+		end_date1 = min(max(end_date,end_date1),end_PDC_date_&n);
+		end;
+	else do;
+		start_date1 =  fu_date;
+		end_date1 = min(max(end_date,end_date1),end_PDC_date_&n);
+	end;
+	if end_date1 > start_date1;
+	run;
+%mend;
+	%year(1, 0, 1); 
+	%year(2, 1, 2);
+	%year(3, 2, 3); 
+	%year(4, 3, 4);
+	%year(5, 4, 5);
+
+/*	A>  CALCULATE TOTAL PDC*/
+/*Sort to choose the maximum medication use in the start date 1*/
+%macro year(n);
+	proc sort data= PDC_1_med_&n OUT= PDC_1_med_&n (keep =  INDI_DSCM_NO start_date1 end_date1 end_PDC_date_&n);
+		by INDI_DSCM_NO start_date1 descending end_date1;
+	run;
+
+	proc sort data=PDC_1_med_&n nodupkey out=PDC_2_med_&n;
+		by INDI_DSCM_NO start_date1;
+	run;	
+%mend;
+	%year(1); 
+	%year(2);
+	%year(3); 
+	%year(4);
+	%year(5);
+
+/*Calculate the PDC by sum of dose day/ each year or let'say 365.25 days,
+	But remind: some patient did not follow up untill the end of PDC day therefore 
+			have to assign 0 for full_dose for these patients*/
+%macro year(F, n);
+	data PDC_3_med_&n;
+		set PDC_2_med_&n;
+		dose_days_&n = sum(end_date1 - start_date1);
+	run;
+
+proc sql;
+	create table PDC_4_med_&n as
+		select INDI_DSCM_NO, sum(dose_days_&n) as sum_dose_days_&n
+	from PDC_3_med_&n
+		group by INDI_DSCM_NO;
+	quit;
+
+proc sql;
+	create table PDC_5_med_&n as
+	select a.INDI_DSCM_NO, a.FEP_event_cate,
+		case when a.INDI_DSCM_NO = b.INDI_DSCM_NO then sum_dose_days_&n
+				else 0 end as full_dose_&n,
+		(calculated full_dose_&n/365.25)*100 as PDC_&n,
+		case when calculated PDC_&n<20 then 1
+					when calculated PDC_&n<40 then 2
+					when calculated PDC_&n<60 then 3
+					when calculated PDC_&n<80 then 4
+					when calculated PDC_&n>=80 then 5
+					else 9 end as PDC_type_Year_&n
+	from u_&F as a
+	left join PDC_4_med_&n as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	group by a.INDI_DSCM_NO
+	having FEP_event_cate ne '2_No';
+	quit;
+proc freq data=PDC_5_med_&n;
+	table PDC_type_Year_&n *FEP_event_cate/ norow nopercent chisq noprint ;
+run;
+/*calculate the percentage of PDC in each category and each year*/
+proc tabulate data=PDC_5_med_&n;
+	class PDC_type_Year_&n FEP_event_cate;
+	tables (PDC_type_Year_&n), FEP_event_cate*(n colpctn);
+run;
+%mend;
+
+%year(SIP2, 1);%year(SIP2, 2);%year(SIP2, 3);%year(SIP2, 4);%year(SIP2, 5);
+%year(SIP2_FEP, 1);%year(SIP2_FEP, 2);%year(SIP2_FEP, 3);%year(SIP2_FEP, 4);%year(SIP2_FEP, 5);
+%year(SIP2_BP, 1);%year(SIP2_BP, 2);%year(SIP2_BP, 3);%year(SIP2_BP, 4);%year(SIP2_BP, 5);
+
+
+/*	B>  CALCULATE OUTPATIENT PDC*/
+/*Calculate the outpatient period
+To calculate oupatient period, we have to calculate inpatient period then total expose - inpatient period*/
+%macro year(n, a,b);
+data  INPT_&n;
+	set a.PDC_med;
+	format end_PDC_date_&n mmddyy10.;
+	end_PDC_date_&n = index_date + 365.25*&b;
+	if index_date + 365.25*&a <=  fu_date < index_date + 365.25*&b;
+	/*calculate ou periods by each follow up year*/
+	if FORM_CD  in ('02','07','10');
+
+ proc sort data= INPT_&n OUT= INPT_1_&n;
+		by INDI_DSCM_NO fu_date descending VSHSP_DD_CNT;
+	run;
+
+proc sort data=INPT_1_&n nodupkey out=INPT_2_&n;
+		by INDI_DSCM_NO fu_date;
+run;
+proc sql;
+	create table INPT_3_&n as
+		select INDI_DSCM_NO, sum(VSHSP_DD_CNT) as sum_inpatient_days_&n 
+	from INPT_2_&n
+		group by INDI_DSCM_NO;
+	quit;
+/*IF the patient during each year have both inpatients and outpatient period then total - inpatient =outpatient days*/
+/*	if no inpatient, it means a.INDI_DSCM_NO ne b.INDI_DSCM_NO then total = outpatient days*/
+proc sql;
+	create table OUT&n as
+		select a.INDI_DSCM_NO,
+		case when a.INDI_DSCM_NO =  b.INDI_DSCM_NO then sum_dose_days_&n - sum_inpatient_days_&n
+				else sum_dose_days_&n end as sum_outpatient_days_&n
+	from PDC_4_med_&n as a
+	left join INPT_3_&n as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+	quit;
+%mend;
+	%year(1, 0, 1); 
+	%year(2, 1, 2);
+	%year(3, 2, 3); 
+	%year(4, 3, 4);
+	%year(5, 4, 5);
+
+/*Calculate the PDC by sum of dose day/ each year or let'say 365.25 days,
+	But remind: some patient did not follow up untill the end of PDC day therefore 
+			have to assign 0 for full_dose for these patients*/
+%macro year(F, n);
+proc sql;
+	create table PDC_5_OUTPT_&n as
+	select a.INDI_DSCM_NO, a.FEP_event_cate, 
+		case when a.INDI_DSCM_NO = b.INDI_DSCM_NO then sum_outpatient_days_&n
+				else 0 end as full_dose_&n,
+		case when a.INDI_DSCM_NO = c.INDI_DSCM_NO then sum_inpatient_days_&n
+				else 0 end as inpatient_days_&n,
+		((calculated full_dose_&n )/(365.25-calculated inpatient_days_&n))*100 as PDC_&n,
+		case when calculated PDC_&n<20 then 1
+					when calculated PDC_&n<40 then 2
+					when calculated PDC_&n<60 then 3
+					when calculated PDC_&n<80 then 4
+					when calculated PDC_&n>=80 then 5
+					else 9 end as PDC_type_Year_&n
+	from u_&F as a
+	left join PDC_4_med_&n as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	group by a.INDI_DSCM_NO
+	having FEP_event_cate ne '2_No',;
+	quit;
+
+
+/*calculate the percentage of PDC in each category and each year*/
+proc freq data=PDC_5_OUTPT_&n;
+	table PDC_type_Year_&n *FEP_event_cate/ norow nopercent chisq noprint ;
+run;
+proc tabulate data=PDC_5_OUTPT_&n;
+	class PDC_type_Year_&n FEP_event_cate;
+	tables (PDC_type_Year_&n), FEP_event_cate*(n colpctn);
+run;
+%mend;
+
+%year(SIP2, 1);%year(SIP2, 2);%year(SIP2, 3);%year(SIP2, 4);%year(SIP2, 5);
+%year(SIP2_FEP, 1);%year(SIP2_FEP, 2);%year(SIP2_FEP, 3);%year(SIP2_FEP, 4);%year(SIP2_FEP, 5);
+%year(SIP2_BP, 1);%year(SIP2_BP, 2);%year(SIP2_BP, 3);%year(SIP2_BP, 4);%year(SIP2_BP, 5);
