@@ -1,0 +1,204 @@
+%macro co_dt(start, end);
+%Do mon =&start %TO &end;
+%IF %substr(&mon, 5,2) =13 %then %let mon = %eval (%substr(&mon,1,4) +1)01;
+proc sql;
+create table A_&mon as
+select a.INDI_DSCM_NO, a.index_date, a.SEX, input(b.MDCARE_STRT_DT, yymmdd8.) as co_date format=mmddyy10., 
+		b.SICK_SYM1, b.SICK_SYM2, b.SICK_SYM3, b.SICK_SYM4, b.SICK_SYM5
+		from a.SIP_2_U as a
+		left join raw.t20_&mon as b
+		on a.INDI_DSCM_NO = b.INDI_DSCM_NO 
+			where a.index_date - 365.25 <= calculated co_date <= a.index_date;
+quit;
+%end;
+%mend co_dt;
+%co_dt(200201,201212);
+data a.comorbidity;
+		set A_200201-A_200212
+		A_200301-A_200312
+		A_200401-A_200412
+		A_200501-A_200512
+		A_200601-A_200612
+	  	A_200701-A_200712
+		A_200801-A_200812
+	  	A_200901-A_200912
+		A_201001-A_201012
+		A_201101-A_201112
+	  	A_201201-A_201212;
+run;
+
+/*N = 23,998°³*/
+
+
+
+/*I. COSOMA*/
+%macro CCI;
+  /* Define all diagnosis codes in one macro variable */
+  %let comorbidities = Hyper: I10 I11 I12 I13 I15 |
+                       DM: E10 E11 E12 E13 E14 |
+                       Tuber: A15 A16 A19 |
+                       Cardi: I05 I06 I07 I08 I09 I20 I21 I22 I23 I24 I25 I26 I27 I50 I51 I52 I3 I4|
+                       Cere: I6 |
+                       Thyro: E0 |
+                       LiveD: K70 K71 K72 K73 K74 K75 K76 K77 B18 B19 |
+                       Can: C1 C2 C3 C4 C5 C6 C7 C8 C9 D0 |
+                       CKD: N18 |;
+/* Loop through each diagnosis category */
+%let n = %sysfunc(countw(&comorbidities, |));
+%do i = 1 %to &n;
+    %let cat_codes = %scan(&comorbidities, &i, |);
+    %let var = %scan(&cat_codes, 1, :);
+    %let codes = %scan(&cat_codes, 2, :);
+
+    /* Create the dataset for each variable */
+    data OUTCCI_&var;
+        set a.COMORBIDITY;
+		where index_date - 30.5*6 < co_date <= index_date;
+		        &var = 0;
+        /* Create an array of symptoms */
+        array symptoms[5] SICK_SYM1-SICK_SYM5;
+
+        /* Loop through symptoms array */
+        do i = 1 to 5;
+            %do j = 1 %to %sysfunc(countw(&codes));
+              %let code = %scan(&codes, &j);
+			  if upcase(substr(symptoms[i], 1, length("&code"))) = "&code" then &var = 1;
+            %end;
+          end;
+        drop i;
+    run;
+		proc sort data= OUTCCI_&var out=OUTCCI_s_&var;
+		by INDI_DSCM_NO descending &var;
+	run;
+	proc sort data= OUTCCI_s_&var nodupkey out=cci_&var;
+		by INDI_DSCM_NO;
+	run;
+%end;
+%mend CCI;
+%CCI;
+
+/* Perform a full join */
+data a.soma;
+    merge CCI_Hyper CCI_DM CCI_Tuber CCI_Cardi
+          	CCI_Cere CCI_Thyro CCI_LiveD CCI_Can CCI_CKD;
+    by INDI_DSCM_NO;
+	CCI = sum(of Hyper--CKD);
+	if CCI = 0 then co_soma = 0; else co_soma = 1;
+run;
+
+proc freq data=a.soma;
+	tables co_soma*sex/chisq;
+run;
+
+data a; set a.soma;
+row_id + 1;
+keep INDI_DSCM_NO SEX Hyper DM Tuber Cardi Cere Thyro LiveD Can CKD row_id;
+run;
+proc sort data=a out=b;
+by  INDI_DSCM_NO SEX row_id ;
+run;
+proc transpose data=b out=c (rename=(_NAME_ = co_soma_sp));
+		by row_id INDI_DSCM_NO SEX;
+		var Hyper DM Tuber Cardi Cere Thyro LiveD Can CKD;
+run;
+data cosoma_sp;
+	set c;
+	if COL1 = 1;
+run;
+/*check the specific co_soma*/
+proc sort data=cosoma_sp;
+	by INDI_DSCM_NO co_soma_sp;
+run;
+proc sort data=cosoma_sp nodupkey out=a.cosoma_sp;
+	by INDI_DSCM_NO co_soma_sp;
+run;
+
+/*II. Check CO MEN*/
+%macro comen;
+  /* Define all diagnosis codes in one macro variable */
+  %let comorbidities = F0: F0 |
+  					   F1: F1 |
+                       F2: F2 |
+                       F3: F3 |
+                       F4: F4 |
+                       F5: F5 |
+                       F6: F6 |
+                       F7: F7 |
+                       F8: F8 |
+					   F9: F90 F91 F92 F93 F94 F95 F96 F97 F98 |;
+/* Loop through each diagnosis category */
+%let n = %sysfunc(countw(&comorbidities, |));
+%do i = 1 %to &n;
+    %let cat_codes = %scan(&comorbidities, &i, |);
+    %let var = %scan(&cat_codes, 1, :);
+    %let codes = %scan(&cat_codes, 2, :);
+
+    /* Create the dataset for each variable */
+    data outcomen_&var;
+        set a.comorbidity;
+			where co_date = index_date;
+		
+        &var = 0;
+        /* Create an array of symptoms */
+        array symptoms[5] SICK_SYM1-SICK_SYM5;
+
+        /* Loop through symptoms array */
+        do i = 1 to 5;
+            %do j = 1 %to %sysfunc(countw(&codes));
+              %let code = %scan(&codes, &j);
+/*			rewrite the symptoms to remove the F1x5 was counted in var F1;
+			  if symptom = F1x5 then change to FN; else symptom= symptom*/
+			  	if upcase(substr(symptoms[i], 1, 4)) in ("F105","F115","F125","F135","F145","F155","F165","F175","F185","F195") then symptoms[i] = "FN";
+					else symptoms[i] = symptoms[i];
+/*				create the var F0-F9*/
+			  if upcase(substr(symptoms[i], 1, length("&code"))) = "&code" then &var = 1;
+            %end;
+          end;
+        drop i;
+    run;
+/*	Sort the data by decending &var*/
+	proc sort data= outcomen_&var out=comen_s_&var;
+		by INDI_DSCM_NO descending &var;
+	run;
+	proc sort data= comen_s_&var nodupkey out=&var;
+		by INDI_DSCM_NO;
+	run;
+%end;
+%mend comen;
+%comen;
+
+/* Perform a full join */
+data a.comen;
+    merge F0 F1 F2 F3
+          	F4 F5 F6 F7 F8 F9;
+    by INDI_DSCM_NO;
+	men = sum(of F0--F9);
+	if men = 0 then co_men = 0; else co_men = 1;
+run;
+
+proc freq data=a.comen;
+	tables co_men*sex/chisq;
+run;
+
+data a; set a.comen;
+row_id + 1;
+keep INDI_DSCM_NO F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 row_id sex;
+run;
+proc sort data=a out=b;
+by  INDI_DSCM_NO row_id;
+run;
+proc transpose data=b out=c (rename=(_NAME_ = co_men_sp));
+		by row_id INDI_DSCM_NO sex;
+		var F0 F1 F2 F3 F4 F5 F6 F7 F8 F9;
+run;
+data comen_sp;
+	set c;
+	if COL1 = 1;
+run;
+/*check the specific co_men*/
+proc sort data=comen_sp;
+	by INDI_DSCM_NO co_men_sp ;
+run;
+proc sort data=comen_sp nodupkey out=a.comen_sp;
+	by INDI_DSCM_NO co_men_sp;
+run;
