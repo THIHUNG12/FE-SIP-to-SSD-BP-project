@@ -1,0 +1,780 @@
+/********************************************************************************************************************/
+/ *II. SMR using total SK population as reference;*******************************************************************/
+/********************************************************************************************************************/
+
+/*import the moratality rate data from kosis*/
+libname MRT xlsx "/userdata08/room373/data_source/Hung/Mortality_rate_0323.xlsx";
+/*import the cause of death data*/
+libname out "/userdata08/room373/data_out/data_out" compress=yes;
+
+/*import the cause of death data to raw data, remove the death date with year 2017*/
+proc sql;
+	create table a.final_cod_db as
+	select a.INDI_DSCM_NO, b.DTH_CODE1, b.DTH_CODE2, 
+			input(a.DTH_ASSMD_DT, yymmdd8.) as dth_date format=yymmdd10.
+	from raw.tg_dth as a
+	left join out.final_cod_db as b
+		on a.INDI_DSCM_NO = b.INDI_DSCM_NO_H
+	having year(dth_date) < 2017;
+quit;
+
+data a.M_rate;
+	set MRT.YEAR_1516;
+run;
+
+/*Create the follow-up data*/
+/*study end: 31122017*/
+/*FE-SIP/ NON-COVERT VS. CONVERT: calculate the weight of each band group TOTAL, sex:
+PLEASE NOTE: LIMIT DEATH CASE UP TO 31/12/2017*/
+
+%macro SMR_sip(F, startdate= , by_sex = 0, by_event =0);
+proc sql;
+create table PY_&F as
+select a.INDI_DSCM_NO, A.SEX, a.FEP_event_cate,
+				case when 20 <= a.age <= 34 then '20-34'
+						when 35 <= a.age <= 49 then '35-49'
+						when 50 <= a.age <= 59 then '50-59'
+						else '9' end as age_band,
+				case when 20 <= a.age <= 59 then '20-59'
+						else '9' end as total_age,
+				coalesce(min(input(b.DTH_ASSMD_DT, yymmdd8.),input("31122017", ddmmyy8.)), input("31122017", ddmmyy8.)) 
+						as fu_dt format ddmmyy10., 
+				case when b.INDI_DSCM_NO is not null and calculated fu_dt <= input("31122017", ddmmyy8.) then 1 else 0 
+						end as observed_case,
+			input("31122017", ddmmyy8.) as study_end format ddmmyy10.,
+			(calculated fu_dt - a.&startdate.)/365.25 as PY
+	from u_&F as a 
+	left join raw.tg_dth as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	having age_band ne '9' and FEP_event_cate ne '2_No';
+quit;
+
+proc sql;
+	create table weight_&F as
+	select age_band %if &by_sex %then , SEX;
+						  %if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by age_band %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+quit;
+
+proc sql;
+	create table full_weight_&F as
+		select total_age %if &by_sex %then , SEX;
+							%if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by total_age %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+
+quit;
+
+proc sql;
+create table merge_weight_&F as
+	select a.*, weight_PY*b.total as total_rate, b.total as ref_total_rate,
+				(weight_PY*total*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+
+	from weight_&F as a
+	left join a.M_rate as b
+	on a.age_band = b.age_band;
+quit;
+proc sql;
+create table merge_full_weight_&F as
+	select a.*, weight_PY*b.total as total_rate, b.total as ref_total_rate,
+				(weight_PY*total*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+	from full_weight_&F as a
+	left join a.M_rate as b
+	on a.total_age = b.age_band;
+quit;
+
+title "SMR total dataset: &F";
+proc print data= merge_weight_&F; 
+run;
+title;
+proc print data= merge_full_weight_&F; run;
+%mend;
+
+
+
+
+%macro SMR_male_sip(F, startdate= , by_sex = 0, by_event =0);
+proc sql;
+create table PY_&F as
+select a.INDI_DSCM_NO, A.SEX, a.FEP_event_cate,
+				case when 20 <= a.age <= 34 then '20-34'
+						when 35 <= a.age <= 49 then '35-49'
+						when 50 <= a.age <= 59 then '50-59'
+						else '9' end as age_band,
+				case when 20 <= a.age <= 59 then '20-59'
+						else '9' end as total_age,
+				coalesce(min(input(b.DTH_ASSMD_DT, yymmdd8.),input("31122017", ddmmyy8.)), input("31122017", ddmmyy8.)) 
+						as fu_dt format ddmmyy10., 
+				case when b.INDI_DSCM_NO is not null and calculated fu_dt <= input("31122017", ddmmyy8.) then 1 else 0 
+						end as observed_case,
+			input("31122017", ddmmyy8.) as study_end format ddmmyy10.,
+			(calculated fu_dt - a.&startdate.)/365.25 as PY
+	from u_&F as a 
+	left join raw.tg_dth as b
+		on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+		having age_band ne '9' and FEP_event_cate ne '2_No';
+quit;
+
+proc sql;
+	create table weight_&F as
+	select age_band %if &by_sex %then , SEX;
+						  %if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by age_band %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+quit;
+
+proc sql;
+	create table full_weight_&F as
+		select total_age %if &by_sex %then , SEX;
+							%if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*)  as weight_PY
+	from PY_&F
+	group by total_age %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+
+quit;
+
+proc sql;
+create table merge_weight_&F as
+	select a.*, weight_PY*b.male as male_rate, b.male as ref_male_rate, 
+				(weight_PY*male*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+
+	from weight_&F as a
+	left join a.M_rate as b
+	on a.age_band = b.age_band
+		having sex = '1';
+quit;
+proc sql;
+create table merge_full_weight_&F as
+	select a.*, weight_PY*b.male as male_rate, b.male as ref_male_rate,
+				(weight_PY*male*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+	from full_weight_&F as a
+	left join a.M_rate as b
+	on a.total_age = b.age_band
+		having sex = '1';
+quit;
+
+title "SMR male dataset: &F";
+proc print data= merge_weight_&F; 
+run;
+title;
+proc print data= merge_full_weight_&F; run;
+%mend;
+%macro SMR_female_sip(F, startdate= , by_sex = 0, by_event =0);
+proc sql;
+create table PY_&F as
+select a.INDI_DSCM_NO, A.SEX, a.FEP_event_cate,
+				case when 20 <= a.age <= 34 then '20-34'
+						when 35 <= a.age <= 49 then '35-49'
+						when 50 <= a.age <= 59 then '50-59'
+						else '9' end as age_band,
+				case when 20 <= a.age <= 59 then '20-59'
+						else '9' end as total_age,
+				coalesce(min(input(b.DTH_ASSMD_DT, yymmdd8.),input("31122017", ddmmyy8.)), input("31122017", ddmmyy8.)) 
+						as fu_dt format ddmmyy10., 
+				case when b.INDI_DSCM_NO is not null and calculated fu_dt <= input("31122017", ddmmyy8.) then 1 else 0 
+						end as observed_case,
+					(calculated fu_dt - a.&startdate.)/365.25 as PY
+	from u_&F as a 
+	left join raw.tg_dth as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	having age_band ne '9' and FEP_event_cate ne '2_No';
+quit;
+
+proc sql;
+	create table weight_&F as
+	select age_band %if &by_sex %then , SEX;
+						  %if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by age_band %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+quit;
+
+proc sql;
+	create table full_weight_&F as
+		select total_age %if &by_sex %then , SEX;
+							%if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by total_age %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+
+quit;
+
+proc sql;
+create table merge_weight_&F as
+	select a.*, weight_PY*b.female as female_rate, b.male as ref_female_rate, 
+				(weight_PY*female*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+
+	from weight_&F as a
+	left join a.M_rate as b
+	on a.age_band = b.age_band
+		having sex = 'F';
+quit;
+proc sql;
+create table merge_full_weight_&F as
+	select a.*, weight_PY*b.female as female_rate, b.male as ref_female_rate,
+				(weight_PY*female*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+	from full_weight_&F as a
+	left join a.M_rate as b
+	on a.total_age = b.age_band
+		having sex = 'F';
+quit;
+title "SMR female dataset: &F";
+proc print data= merge_weight_&F; 
+run;
+title;
+proc print data= merge_full_weight_&F; run;
+%mend;
+
+/*FE-SIP then startdate = index_date*/
+%SMR_sip(SIP2, startdate= index_date, by_sex = 0, by_event =0);
+%SMR_male_sip(SIP2, startdate= index_date, by_sex = 1, by_event =0);
+%SMR_female_sip(SIP2, startdate= index_date, by_sex = 1, by_event =0);
+
+/*convert - nonconvert then startdate = date_PY*/
+/*FEP*/
+%SMR_sip(SIP2, startdate= date_PY, by_sex = 0, by_event =1);
+%SMR_male_sip(SIP2, startdate= date_PY, by_sex = 1, by_event =1);
+%SMR_female_sip(SIP2, startdate= date_PY, by_sex = 1, by_event =1);
+
+/*SSD*/
+%SMR_sip(SIP2_FEP, startdate= date_PY, by_sex = 0, by_event =1);
+%SMR_male_sip(SIP2_FEP, startdate= date_PY, by_sex = 1, by_event =1);
+%SMR_female_sip(SIP2_FEP, startdate= date_PY, by_sex = 1, by_event =1);
+
+/*BP*/
+%SMR_sip(SIP2_BP, startdate= date_PY, by_sex = 0, by_event =1);
+%SMR_male_sip(SIP2_BP, startdate= date_PY, by_sex = 1, by_event =1);
+%SMR_female_sip(SIP2_BP, startdate= date_PY, by_sex = 1, by_event =1);
+
+
+/********************************************************************************************************************/
+/ *II. SMR using SUD as reference;***********************************************************************************/
+/********************************************************************************************************************/
+%LET ICD="F1";
+%LET ex_ICD = "F105","F115","F125","F135","F145","F155","F165","F175","F185","F195","F107","F117","F127","F137","F147","F157","F167","F177","F187","F197";
+	
+
+%macro SUD(start, end);
+%Do mon =&start %TO &end;
+%IF %substr(&mon, 5,2) =13 %then %let mon = %eval (%substr(&mon,1,4) +1)01;
+data B_&mon;
+	set raw.t20_&mon;
+	format index_date mmddyy10.;
+	index_date = input(MDCARE_STRT_DT, yymmdd8.);
+	if (upcase(substr(SICK_SYM1,1,2)) in (&ICD) and upcase(substr(SICK_SYM1,1,4)) not in (&ex_ICD)) then ck_1 = 1; else ck_1 = 0;
+	if (upcase(substr(SICK_SYM2,1,2)) in (&ICD) and upcase(substr(SICK_SYM2,1,4)) not in (&ex_ICD)) then ck_2 = 1; else ck_2 = 0;
+	if (upcase(substr(SICK_SYM3,1,2)) in (&ICD) and upcase(substr(SICK_SYM3,1,4)) not in (&ex_ICD)) then ck_3 = 1; else ck_3 = 0;
+	if (upcase(substr(SICK_SYM4,1,2)) in (&ICD) and upcase(substr(SICK_SYM4,1,4)) not in (&ex_ICD)) then ck_4 = 1; else ck_4 = 0;
+	if (upcase(substr(SICK_SYM5,1,2)) in (&ICD) and upcase(substr(SICK_SYM5,1,4)) not in (&ex_ICD)) then ck_5 = 1; else ck_5 = 0;
+	keep INDI_DSCM_NO MDCARE_STRT_DT index_date SICK_SYM1 SICK_SYM2 SICK_SYM3 SICK_SYM4 SICK_SYM5 ck_1 ck_2 ck_3 ck_4 ck_5;
+run;
+data F1_&mon F2_&mon F3_&mon F4_&mon F5_&mon;
+	set B_&mon;
+		If ck_1 = 1 then do;			
+		output F1_&mon;			end;
+	else if ck_2 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F') 
+			then do;			output F2_&mon;			end;
+ 	else if ck_3 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F' and upcase(substr(SICK_SYM2,1,1)) ne 'F')
+			then do;			output F3_&mon;			end;
+ 	else if ck_4 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F' and upcase(substr(SICK_SYM2,1,1)) ne 'F' and upcase(substr(SICK_SYM3,1,1)) ne 'F')
+			then do;			output F4_&mon;			end;
+	else if ck_5 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F' and upcase(substr(SICK_SYM2,1,1)) ne 'F' and upcase(substr(SICK_SYM3,1,1)) ne 'F' and upcase(substr(SICK_SYM4,1,1)) ne 'F')
+			then do;			output F5_&mon;			end;
+run;
+data F_&mon;
+	set F1_&mon F2_&mon F3_&mon F4_&mon F5_&mon;
+run;
+%end;
+%mend SUD;
+%SUD(200201,201312);
+data a.sud_0213;
+		set F_200201-F_200212
+		F_200301-F_200312
+		F_200401-F_200412
+		F_200501-F_200512
+		F_200601-F_200612
+	  	F_200701-F_200712
+		F_200801-F_200812
+	  	F_200901-F_200912
+		F_201001-F_201012
+		F_201101-F_201112
+	  	F_201201-F_201212
+		F_201301-F_201312;
+run;
+/*N= 5,062,717  */
+proc sort data=a.sud_0213; 
+	by  INDI_DSCM_NO index_date;
+run;
+proc sort data=a.sud_0213 nodupkey out=sud_0213_u; 
+	by  INDI_DSCM_NO ;
+run;
+
+%LET F1x7 = "F107","F117","F127","F137","F147","F157","F167","F177","F187","F197";
+%macro SIP(start, end);
+%Do mon =&start %TO &end;
+%IF %substr(&mon, 5,2) =13 %then %let mon = %eval (%substr(&mon,1,4) +1)01;
+data B_&mon;
+	set raw.t20_&mon;
+	format index_date mmddyy10.;
+	index_date = input(MDCARE_STRT_DT, yymmdd8.);
+	if upcase(substr(SICK_SYM1,1,4)) in (&F1x7) then ck_1 = 1; else ck_1 = 0;
+	if upcase(substr(SICK_SYM2,1,4)) in (&F1x7) then ck_2 = 1; else ck_2 = 0;
+	if upcase(substr(SICK_SYM3,1,4)) in (&F1x7) then ck_3 = 1; else ck_3 = 0;
+	if upcase(substr(SICK_SYM4,1,4)) in (&F1x7) then ck_4 = 1; else ck_4 = 0;
+	if upcase(substr(SICK_SYM5,1,4)) in (&F1x7) then ck_5 = 1; else ck_5 = 0;
+	keep INDI_DSCM_NO MDCARE_STRT_DT index_date SICK_SYM1 SICK_SYM2 SICK_SYM3 SICK_SYM4 SICK_SYM5 ck_1 ck_2 ck_3 ck_4 ck_5;
+run;
+data F1_&mon F2_&mon F3_&mon F4_&mon F5_&mon;
+	set B_&mon;
+		If ck_1 = 1 then do;			
+		output F1_&mon;			end;
+	else if ck_2 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F') 
+			then do;			output F2_&mon;			end;
+ 	else if ck_3 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F' and upcase(substr(SICK_SYM2,1,1)) ne 'F')
+			then do;			output F3_&mon;			end;
+ 	else if ck_4 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F' and upcase(substr(SICK_SYM2,1,1)) ne 'F' and upcase(substr(SICK_SYM3,1,1)) ne 'F')
+			then do;			output F4_&mon;			end;
+	else if ck_5 = 1 and (upcase(substr(SICK_SYM1,1,1)) ne 'F' and upcase(substr(SICK_SYM2,1,1)) ne 'F' and upcase(substr(SICK_SYM3,1,1)) ne 'F' and upcase(substr(SICK_SYM4,1,1)) ne 'F')
+			then do;			output F5_&mon;			end;
+run;
+data F_&mon;
+	set F1_&mon F2_&mon F3_&mon F4_&mon F5_&mon;
+run;
+%end;
+%mend SUD;
+%SIP(200201,201312);
+data a.F1x7_0213;
+		set F_200201-F_200212
+		F_200301-F_200312
+		F_200401-F_200412
+		F_200501-F_200512
+		F_200601-F_200612
+	  	F_200701-F_200712
+		F_200801-F_200812
+	  	F_200901-F_200912
+		F_201001-F_201012
+		F_201101-F_201112
+	  	F_201201-F_201212
+		F_201301-F_201312;
+run;
+/*N=41354  */
+proc sort data=a.F1x7_0213; 
+	by  INDI_DSCM_NO index_date;
+run;
+proc sort data=a.F1x7_0213 nodupkey out=F1x7_u; 
+	by  INDI_DSCM_NO ;
+run;
+/*N=7358  */
+
+
+/*N = 599,337  */
+/*Remove the patient have previous diagnosis with FE-SIP*/
+proc sql;
+	create table a.final_SUD as 
+	select a.*
+	from sud_0213_u as a
+	left join a.F1X5_MAIN_0312 as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	left join F1x7_u as c
+	on a.INDI_DSCM_NO = c.INDI_DSCM_NO
+	where a.INDI_DSCM_NO ne b.INDI_DSCM_NO and a.INDI_DSCM_NO ne c.INDI_DSCM_NO;
+quit;
+data a.final_SUD;
+	set a.final_SUD;
+	if ck_1= 1 then final_F = upcase(substr(SICK_SYM1,1,4));
+	else if ck_2= 1 then final_F = upcase(substr(SICK_SYM2,1,4));
+	else if ck_3= 1 then final_F = upcase(substr(SICK_SYM3,1,4));
+	else if ck_4= 1 then final_F = upcase(substr(SICK_SYM4,1,4));
+	else if ck_5= 1 then final_F = upcase(substr(SICK_SYM5,1,4));
+keep INDI_DSCM_NO index_date final_F;
+run;
+/*N = 586,133*/
+
+/*merge with bfc table to create the age band*/
+/*merge with final_cod_db to get the number of death and calculate PY mortality rate*/
+%macro bfc(year);
+proc sql;
+	create table age_&year as
+	select a.*, coalesce(b.BYEAR) as BYEAR, year(index_date)  - input(calculated BYEAR, 4.) as age, sex_type as sex
+	from a.final_SUD as a
+	inner join raw.bfc_&year as b
+on a.INDI_DSCM_NO=b.INDI_DSCM_NO;
+;
+quit;
+%mend;
+%bfc(2003);%bfc(2004);%bfc(2005);%bfc(2006);%bfc(2007);
+%bfc(2008);%bfc(2009);%bfc(2010);%bfc(2011);%bfc(2012);
+%bfc(2013);%bfc(2014);%bfc(2015);%bfc(2016);%bfc(2017);
+%bfc(2018);%bfc(2019);%bfc(2020);%bfc(2021);%bfc(2022);%bfc(2023);
+
+data a.age;
+set age_2003-age_2023;
+run;
+PROC SORT data=a.age nodupkey out=a.age;
+	BY INDI_DSCM_NO;
+RUN;
+/*n= 583237  */
+	
+/*data ck;*/
+/*	set a.age;*/
+/*	where 18 <= age <= 60 ;*/
+/*run;*/
+/*N= 461,609  */
+/*I./Calculate by total*/
+%macro SMR_sip_sud (F, startdate= , by_sex = 0, by_event =0);
+/*step 1 create the reference mortality*/
+proc sql;
+create table PY as
+select a.INDI_DSCM_NO, 
+				case when sex ='2' then 'F' else '1' end as sex, a.index_date,
+				case when 18<= age <=  30 then '18-30'
+						when 31<= age <=  40 then '31-40'
+						when 41<= age <=  50 then '41-50'
+						when 51<= age <=  60 then '51-60'
+						else '9' end as age_band,
+				case when 18 <= a.age <= 60 then '18-60'
+						else '9' end as total_age, 
+				b.DTH_ASSMD_DT,
+				case when a.INDI_DSCM_NO = b.INDI_DSCM_NO then min(input(b.DTH_ASSMD_DT, yymmdd8.),input("31122017", ddmmyy8.)) 
+								else input("31122017", ddmmyy8.)
+								end as fu_dt format ddmmyy10.,  
+		case when a.INDI_DSCM_NO = b.INDI_DSCM_NO and calculated fu_dt <= input("31122017", ddmmyy8.) then 1 else 0 
+						end as observed_case_SUD,
+			(calculated fu_dt - a.index_date)/365.25 as PY_SUD
+	from a.age as a 
+	left join raw.tg_dth as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	having age_band ne '9';
+quit;
+
+proc sql;
+	create table weight as
+	select age_band %if &by_sex %then , sex;, 
+			count(*) as cnt_age_band_SUD, 
+			sum(observed_case_SUD) as cnt_observed_SUD, 
+			sum(PY_SUD) as PY_SUD_age_band,
+			sum(observed_case_SUD)*100000/ (calculated PY_SUD_age_band) as reference_rate
+	from PY
+	group by age_band %if &by_sex %then , sex;;
+quit;
+
+proc sql;
+	create table full_weight as
+		select total_age %if &by_sex %then , sex;, 
+			count(*) as cnt_age_band_SUD, 
+			sum(observed_case_SUD) as cnt_observed_SUD, 
+			sum(PY_SUD) as PY_SUD_age_band,
+			sum(observed_case_SUD)*100000/ (calculated PY_SUD_age_band) as reference_rate
+	from PY
+	group by total_age %if &by_sex %then , sex;;
+quit;
+
+/*step 2: create the observed death and weight_PY*/
+
+proc sql;
+create table PY_&F as
+select a.INDI_DSCM_NO, A.SEX, a.FEP_event_cate,
+				case when 18<= a.age <=  30 then '18-30'
+						when 31<= a.age <=  40 then '31-40'
+						when 41<= a.age <=  50 then '41-50'
+						when 51<= a.age <=  60 then '51-60'
+						else '9' end as age_band,
+				case when 18 <= a.age <= 60 then '18-60'
+						else '9' end as total_age, 
+				coalesce(min(input(b.DTH_ASSMD_DT, yymmdd8.),input("31122017", ddmmyy8.)), input("31122017", ddmmyy8.)) 
+						as fu_dt format ddmmyy10., 
+				case when b.INDI_DSCM_NO is not null and calculated fu_dt <= input("31122017", ddmmyy8.) then 1 else 0 
+						end as observed_case,
+			input("31122017", ddmmyy8.) as study_end format ddmmyy10.,
+			(calculated fu_dt - a.&startdate.)/365.25 as PY
+	from u_&F as a 
+	left join raw.tg_dth as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	having age_band ne '9' and FEP_event_cate ne '2_No';
+quit;
+
+proc sql;
+	create table weight_&F as
+	select age_band %if &by_sex %then , SEX;
+						  %if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by age_band %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+quit;
+
+proc sql;
+	create table full_weight_&F as
+		select total_age %if &by_sex %then , SEX;
+							%if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by total_age %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+
+quit;
+/*step 3: calculated expected death and SMR, 95%CI*/
+proc sql;
+create table merge_weight_&F as
+	select 
+			a.*, weight_PY*b.reference_rate as total_rate, b.cnt_observed_SUD, b.PY_SUD_age_band, b.reference_rate, 
+				(weight_PY*b.reference_rate*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+
+	from weight_&F as a
+	left join weight as b
+	on a.age_band = b.age_band;
+quit;
+proc sql;
+create table merge_full_weight_&F as
+	select 	a.*, weight_PY*b.reference_rate as total_rate, b.cnt_observed_SUD, b.PY_SUD_age_band, b.reference_rate, 
+				(weight_PY*b.reference_rate*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+	from full_weight_&F as a
+	left join full_weight as b
+	on a.total_age = b.total_age;
+quit;
+
+title "SMR sex=&by_sex dataset: &F";
+proc print data= merge_weight_&F; 
+run;
+title;
+proc print data= merge_full_weight_&F; run;
+%mend;
+
+/*FE-SIP then startdate = index_date*/
+%SMR_sip_sud (SIP2, startdate= index_date, by_sex = 0, by_event =0);
+
+/*convert - nonconvert then startdate = date_PY*/
+/*FEP*/
+%SMR_sip_sud(SIP2, startdate= date_PY, by_sex = 0, by_event =1);
+/*SSD*/
+%SMR_sip_sud(SIP2_FEP, startdate= date_PY, by_sex = 0, by_event =1);
+/*BP*/
+%SMR_sip_sud(SIP2_BP, startdate= date_PY, by_sex = 0, by_event =1);
+
+
+/*II./Calculate by sex*/
+
+%macro SMR_sip_sud_sex (F, startdate= , by_sex = 1, by_event =0);
+/*step 1 create the reference mortality*/
+proc sql;
+create table PY as
+select a.INDI_DSCM_NO, 
+				case when sex ='2' then 'F' else '1' end as sex, a.index_date,
+				case when 18<= age <=  30 then '18-30'
+						when 31<= age <=  40 then '31-40'
+						when 41<= age <=  50 then '41-50'
+						when 51<= age <=  60 then '51-60'
+						else '9' end as age_band,
+				case when 18 <= a.age <= 60 then '18-60'
+						else '9' end as total_age, 
+				b.DTH_ASSMD_DT,
+				case when a.INDI_DSCM_NO = b.INDI_DSCM_NO then min(input(b.DTH_ASSMD_DT, yymmdd8.),input("31122017", ddmmyy8.)) 
+								else input("31122017", ddmmyy8.)
+								end as fu_dt format ddmmyy10.,  
+		case when a.INDI_DSCM_NO = b.INDI_DSCM_NO and calculated fu_dt <= input("31122017", ddmmyy8.) then 1 else 0 
+						end as observed_case_SUD,
+			(calculated fu_dt - a.index_date)/365.25 as PY_SUD
+	from a.age as a 
+	left join raw.tg_dth as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	having age_band ne '9';
+quit;
+
+proc sql;
+	create table weight as
+	select age_band %if &by_sex %then , sex;, 
+			count(*) as cnt_age_band_SUD, 
+			sum(observed_case_SUD) as cnt_observed_SUD, 
+			sum(PY_SUD) as PY_SUD_age_band,
+			sum(observed_case_SUD)*100000/ (calculated PY_SUD_age_band) as reference_rate
+	from PY
+	group by age_band %if &by_sex %then , sex;;
+quit;
+
+proc sql;
+	create table full_weight as
+		select total_age %if &by_sex %then , sex;, 
+			count(*) as cnt_age_band_SUD, 
+			sum(observed_case_SUD) as cnt_observed_SUD, 
+			sum(PY_SUD) as PY_SUD_age_band,
+			sum(observed_case_SUD)*100000/ (calculated PY_SUD_age_band) as reference_rate
+	from PY
+	group by total_age %if &by_sex %then , sex;;
+quit;
+
+/*step 2: create the observed death and weight_PY*/
+
+proc sql;
+create table PY_&F as
+select a.INDI_DSCM_NO, A.SEX, a.FEP_event_cate,
+				case when 18<= a.age <=  30 then '18-30'
+						when 31<= a.age <=  40 then '31-40'
+						when 41<= a.age <=  50 then '41-50'
+						when 51<= a.age <=  60 then '51-60'
+						else '9' end as age_band,
+				case when 18 <= a.age <= 60 then '18-60'
+						else '9' end as total_age, 
+				coalesce(min(input(b.DTH_ASSMD_DT, yymmdd8.),input("31122017", ddmmyy8.)), input("31122017", ddmmyy8.)) 
+						as fu_dt format ddmmyy10., 
+				case when b.INDI_DSCM_NO is not null and calculated fu_dt <= input("31122017", ddmmyy8.) then 1 else 0 
+						end as observed_case,
+			input("31122017", ddmmyy8.) as study_end format ddmmyy10.,
+			(calculated fu_dt - a.&startdate.)/365.25 as PY
+	from u_&F as a 
+	left join raw.tg_dth as b
+	on a.INDI_DSCM_NO = b.INDI_DSCM_NO
+	having age_band ne '9' and FEP_event_cate ne '2_No';
+quit;
+
+proc sql;
+	create table weight_&F as
+	select age_band %if &by_sex %then , SEX;
+						  %if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by age_band %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+quit;
+
+proc sql;
+	create table full_weight_&F as
+		select total_age %if &by_sex %then , SEX;
+							%if &by_event %then , FEP_event_cate;, 
+			count(*) as cnt_age_band, 
+			sum(observed_case) as cnt_observed_case, sum(PY) as PY_age_band,
+			sum(PY)/ count(*) as weight_PY
+	from PY_&F
+	group by total_age %if &by_sex %then , SEX;
+							  %if &by_event %then , FEP_event_cate;;
+
+quit;
+/*step 3: calculated expected death and SMR, 95%CI*/
+proc sql;
+create table merge_weight_&F as
+	select 
+			a.*, weight_PY*b.reference_rate as total_rate, b.cnt_observed_SUD, b.PY_SUD_age_band, b.reference_rate, 
+				(weight_PY*b.reference_rate*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+
+	from weight_&F as a
+	left join weight as b
+	on a.age_band = b.age_band and a.sex=b.sex;
+quit;
+proc sql;
+create table merge_full_weight_&F as
+	select 	a.*, weight_PY*b.reference_rate as total_rate, b.cnt_observed_SUD, b.PY_SUD_age_band, b.reference_rate, 
+				(weight_PY*b.reference_rate*cnt_age_band)/100000 as expected_case, 
+			 cnt_observed_case/calculated expected_case as SMR,
+			 quantile('CHISQ', 0.025, 2*cnt_observed_case) / 2*(calculated expected_case) as SMR_LCL,
+			 quantile('CHISQ', 0.975, 2*(cnt_observed_case +1 )) / 2*(calculated expected_case) as SMR_UCL,
+
+/*			 Poisson 95%*/
+				cnt_observed_case / calculated expected_case*(1-1.96/sqrt(cnt_observed_case)) as LL_point,
+				cnt_observed_case / calculated expected_case*(1+1.96/sqrt(cnt_observed_case)) as UL_point
+	from full_weight_&F as a
+	left join full_weight as b
+	on a.total_age = b.total_age and a.sex=b.sex;
+quit;
+
+title "SMR sex=&by_sex dataset: &F";
+proc print data= merge_weight_&F; 
+run;
+title;
+proc print data= merge_full_weight_&F; run;
+%mend;
+
+/*FE-SIP then startdate = index_date*/
+%SMR_sip_sud_sex (SIP2, startdate= index_date, by_sex = 1, by_event =0);
+/*convert - nonconvert then startdate = date_PY*/
+/*FEP*/
+%SMR_sip_sud_sex(SIP2, startdate= date_PY, by_sex = 1, by_event =1);
+/*SSD*/
+%SMR_sip_sud_sex(SIP2_FEP, startdate= date_PY, by_sex = 1, by_event =1);
+/*BP*/
+%SMR_sip_sud_sex(SIP2_BP, startdate= date_PY, by_sex = 1, by_event =1);
+
