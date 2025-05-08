@@ -1,0 +1,295 @@
+/*compare 3 groups*/
+%macro data(F, var=);
+ods output ChiSq=work.ChiSqResults(where=(statistic = 'Ä«ÀÌÁ¦°ö'));
+proc freq data=u_&F;
+	table &var.*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+ods output close;
+proc print data=ChiSqResults noobs; run;
+%mend;
+
+%data(SIP2, var = age_low_demo);%data(SIP2, var = Sex); %data(SIP2, var = GAIBJA_TYPE);%data(SIP2, var = co_soma);
+%data(SIP2, var = co_men); %data(SIP2, var = final_F);%data(SIP2, var = income_low_demo);%data(SIP2, var = psy_ser);
+%data(SIP2, var = region);%data(SIP2, var = db_cate);
+
+
+
+
+%macro data(F, var=);
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+proc freq data=u_&F;
+	where FEP_event_cate in ('1_No', '2_SSD');
+	table &var.*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+
+proc freq data=u_&F;
+	where FEP_event_cate in ('1_No', '3_BP');
+	table &var.*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+
+proc freq data=u_&F;
+	where FEP_event_cate in ('2_SSD', '3_BP');
+	table &var.*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+ods output clear;
+proc print noobs;
+	var Table value Raw_P;
+run;
+proc multtest inpvalues= chisq bon;
+run;
+%mend;
+
+%data(SIP2, var = age_low_demo);%data(SIP2, var = Sex); %data(SIP2, var = GAIBJA_TYPE);%data(SIP2, var = co_soma);
+%data(SIP2, var = co_men); %data(SIP2, var = final_F);%data(SIP2, var = income_low_demo);%data(SIP2, var = psy_ser);
+%data(SIP2, var = region);%data(SIP2, var = db_cate);
+
+
+
+
+/*I. by comen*/
+%macro comen_sex(F, N );
+* selec the data at baseline;
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+proc sql; 
+	create table uu_&F.&N as
+	select a.indi_dscm_no, a.FEP_event_cate, a.sex, b.*
+	from u_&F as a
+	left join a.&N as b
+		on a.indi_dscm_no = b.indi_dscm_no;
+quit;
+proc tabulate data=uu_&F.&N;
+class F0--F9 sex;
+tables (F0--F9), sex*(n colpctn);
+run;
+
+proc freq data=uu_&F.&N; table F0-F9*sex/nocol norow nopercent chisq; run;
+ods output clear;
+proc print noobs;
+	var table value Raw_P;
+run;
+%mend comen_sex;
+
+%macro comen_event(F, N );
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+* select the data at baseline;
+proc sql; 
+	create table uu_&F.&N as
+	select a.indi_dscm_no, a.FEP_event_cate, a.sex, b.*
+	from u_&F as a
+	left join a.&N as b
+		on a.indi_dscm_no = b.indi_dscm_no;
+quit;
+proc tabulate data=uu_&F.&N;
+class F0--F9 FEP_event_cate;
+tables (F0--F9), FEP_event_cate*(n colpctn);
+run;
+
+proc freq data=uu_&F.&N; table F0--F9*FEP_event_cate/nocol norow nopercent chisq; run;
+ods output clear;
+proc print noobs;
+	var table value Raw_P;
+run;
+%mend comen_event;
+
+%macro comen_adjust_event(F, N, var= );
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+proc freq data=uu_&F.&N;
+	where FEP_event_cate in ('1_No', '2_SSD');
+	table &var*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+
+proc freq data=uu_&F.&N;
+	where FEP_event_cate in ('1_No', '3_BP');
+	table &var*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+
+proc freq data=uu_&F.&N;
+	where FEP_event_cate in ('2_SSD', '3_BP');
+	table &var*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+ods output clear;
+proc print noobs;
+	var Table value Raw_P;
+run;
+proc multtest inpvalues= chisq bon;
+run;
+%mend comen_adjust_event;
+
+/*II. by soma*/
+%macro cosoma_sex(F, N );
+* selec the data at baseline;
+/*create the variable with show if patient without comoribidity will write as '1' to run the logistic regression*/
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+proc sql; 
+	create table uu_&F.&N as
+	select a.indi_dscm_no, a.FEP_event_cate, a.sex, b.*
+	from u_&F as a
+	left join a.&N as b
+		on a.indi_dscm_no = b.indi_dscm_no;
+quit;
+proc tabulate data=uu_&F.&N;
+class HYPER--CKD sex;
+tables (HYPER--CKD), sex*(n colpctn);
+run;
+proc freq data=uu_&F.&N; table HYPER--CKD*sex/nocol norow nopercent chisq; run;
+ods output clear;
+proc print noobs;
+	var table value Raw_P;
+run;
+%mend cosoma_sex;
+%macro cosoma_event(F, N);
+* selec the data at baseline;
+/*create the variable with show if patient without comoribidity will write as '1' to run the logistic regression*/
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+proc sql; 
+	create table uu_&F.&N as
+	select a.indi_dscm_no, a.FEP_event_cate, a.sex, b.*
+	from u_&F as a
+	left join a.&N as b
+		on a.indi_dscm_no = b.indi_dscm_no;
+quit;
+
+proc freq data=uu_&F.&N; table HYPER--CKD*FEP_event_cate/nocol norow nopercent chisq; run;
+ods output clear;
+proc print noobs;
+	var table value Raw_P;
+run;
+%mend cosoma_event;
+
+%macro cosoma_adjust_event(F, N, var );
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+proc freq data=uu_&F.&N;
+	where FEP_event_cate in ('1_No', '2_SSD');
+	table &var*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+
+proc freq data=uu_&F.&N;
+	where FEP_event_cate in ('1_No', '3_BP');
+	table &var*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+
+proc freq data=uu_&F.&N;
+	where FEP_event_cate in ('2_SSD', '3_BP');
+	table &var*FEP_event_cate/ norow nocol nopercent chisq noprint;
+run;
+ods output clear;
+proc print noobs;
+	var Table value Raw_P;
+run;
+proc multtest inpvalues= chisq bon;
+run;
+%mend cosoma_adjust_event;
+/*III. Disability*/
+%macro disability(var );
+* selec the data at baseline;
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+data dis;
+set u_SIP2;
+if substr(MAIN_DSB_TYPE,1,2)='01' then dis1 = '1'; else dis1 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='02' then dis2 = '1'; else dis2 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='03' then dis3 = '1'; else dis3 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='04' then dis4 = '1'; else dis4 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='05' then dis5 = '1'; else dis5 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='06' then dis6 = '1'; else dis6 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='08' then dis8 = '1'; else dis8 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='09' then dis9 = '1'; else dis9 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='11' then dis11 = '1'; else dis11 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='12' then dis12 = '1'; else dis12 = '0';
+if substr(MAIN_DSB_TYPE,1,2)='15' then dis15 = '1'; else dis15 = '0';
+run;
+proc freq data=dis; table dis1--dis15*&var/nocol norow nopercent chisq; run;
+ods output clear;
+proc print noobs;
+	var table value Raw_P;
+run;
+%mend disability;
+
+
+%macro disability_adjust_event(var );
+* selec the data at baseline;
+ods output chisq(persist) = chisq(where = (statistic = "Ä«ÀÌÁ¦°ö")
+				rename = (Prob =Raw_P));
+proc freq data=dis;
+	where FEP_event_cate in ('1_No', '2_SSD');
+table &var*FEP_event_cate/nocol norow nopercent noprint chisq; 
+run;
+
+proc freq data=dis;
+	where FEP_event_cate in ('1_No', '3_BP');
+	table &var*FEP_event_cate/nocol norow nopercent noprint chisq; 
+run;
+
+proc freq data=dis;
+	where FEP_event_cate in ('2_SSD', '3_BP');
+	table &var*FEP_event_cate/nocol norow nopercent noprint chisq; 
+run;
+ods output clear;
+proc print noobs;
+	var Table value Raw_P;
+run;
+proc multtest inpvalues= chisq bon;
+run;
+%mend disability_adjust_event;
+%comen_sex(SIP2, COMEN);
+%cosoma_sex(SIP2, SOMA);
+
+
+%comen_event(SIP2, COMEN);
+%comen_adjust_event(SIP2, COMEN, var= F0);%comen_adjust_event(SIP2, COMEN, var=F1);%comen_adjust_event(SIP2, COMEN, var=F2);
+%comen_adjust_event(SIP2, COMEN, var=F3);%comen_adjust_event(SIP2, COMEN, var=F4);%comen_adjust_event(SIP2, COMEN, var=F5);
+%comen_adjust_event(SIP2, COMEN, var=F6);%comen_adjust_event(SIP2, COMEN, var=F7);%comen_adjust_event(SIP2, COMEN, var=F8);
+%comen_adjust_event(SIP2, COMEN, var=F9);
+
+%cosoma_event(SIP2, SOMA);
+%cosoma_adjust_event(SIP2, SOMA, var= Hyper);%cosoma_adjust_event(SIP2, SOMA, var= DM);
+%cosoma_adjust_event(SIP2, SOMA, var= Tuber);%cosoma_adjust_event(SIP2, SOMA, var= Cardi);
+%cosoma_adjust_event(SIP2, SOMA, var= Cere);%cosoma_adjust_event(SIP2, SOMA, var= Thyro);
+%cosoma_adjust_event(SIP2, SOMA, var= LiveD);%cosoma_adjust_event(SIP2, SOMA, var= Can);
+%cosoma_adjust_event(SIP2, SOMA, var= CKD);
+
+/*total event*/
+%disability(var =sex);
+ods output ChiSq=work.ChiSqResults(where=(statistic = 'Ä«ÀÌÁ¦°ö'));
+proc freq data=dis; table dis1--dis15*FEP_event_cate/norow nocol nopercent chisq noprint;
+run;
+ods output close;
+proc print data=ChiSqResults noobs; run;
+
+%disability_adjust_event(var = dis1);%disability_adjust_event(var = dis2);%disability_adjust_event(var = dis3);
+%disability_adjust_event(var = dis4);%disability_adjust_event(var = dis5);%disability_adjust_event(var =dis6);
+%disability_adjust_event(var = dis8);%disability_adjust_event(var =dis9);%disability_adjust_event(var = dis11);
+%disability_adjust_event(var = dis12);%disability_adjust_event(var = dis15);
+
+
+proc univariate data=u_SIP2 normal;
+class FEP_event_cate;
+var AGE;
+ods select TestsForNormality;
+run;
+
+*ºñ¸ð¼ö;
+proc npar1way dscf data=u_SIP2 wilcoxon;
+class FEP_event_cate;
+var AGE;
+run;
+
+
+proc univariate data=u_SIP2 normal;
+class FEP_event_cate;
+var length_h;
+ods select TestsForNormality;
+run;
+
+*ºñ¸ð¼ö;
+proc npar1way dscf data=u_SIP2 wilcoxon;
+class FEP_event_cate;
+var length_h;
+run;
