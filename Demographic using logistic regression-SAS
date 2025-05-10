@@ -1,0 +1,114 @@
+%macro data(F, var=);
+proc glm data=u_&F;
+	class FEP_event_cate;
+	model &var = FEP_event_cate;
+	means FEP_event_cate /tukey cldiff alpha= 0.05;
+	lsmeans FEP_event_cate/pdiff =all adjust=tukey cl;
+run;
+quit;
+%mend;
+%data(SIP2, var = age); %data(SIP2, var=length_h); 
+
+
+
+%macro data(F, variable=);
+proc sort data=u_&F;
+	by FEP_event_cate;
+run;
+proc freq data=u_&F;
+	where FEP_event_cate ne '2_No';
+	table &variable.*FEP_event_cate/ chisq;
+	run;
+%mend;
+
+/*Demographic run the multi logistic to get the OR with the reference*/
+%macro data(F,variable=);
+	proc logistic data=u_&F;
+	where FEP_event_cate ne '2_No';
+	class FEP_event_cate (ref = '1_No') &variable (ref = '1');
+	model &variable = FEP_event_cate / link=glogit;
+run;
+%mend;
+
+/*%data(SIP2, variable=age_low_demo);%data(SIP2, variable=Sex);%data(SIP2, variable=GAIBJA_TYPE);%data(SIP2, variable=co_men);%data(SIP2, variable=co_soma);*/
+/*%data(SIP2, variable=final_F);%data(SIP2, variable=income_low_demo);%data(SIP2, variable=region);%data(SIP2, variable=psy_ser);  %data(SIP2, variable=db_cate);*/
+
+/*%data(SIP2_FEP, variable=age_low_demo);%data(SIP2_FEP, variable=Sex);%data(SIP2_FEP, variable=GAIBJA_TYPE);%data(SIP2_FEP, variable=co_men);%data(SIP2_FEP, variable=co_soma);*/
+/*%data(SIP2_FEP, variable=final_F);%data(SIP2_FEP, variable=income_low_demo);%data(SIP2_FEP, variable=region);%data(SIP2_FEP, variable=psy_ser);  %data(SIP2_FEP, variable=db_cate);*/
+
+%data(SIP2_BP, variable=age_low_demo);%data(SIP2_BP, variable=Sex);%data(SIP2_BP, variable=GAIBJA_TYPE);%data(SIP2_BP, variable=co_men);%data(SIP2_BP, variable=co_soma);
+%data(SIP2_BP, variable=final_F);%data(SIP2_BP, variable=income_low_demo);%data(SIP2_BP, variable=region);%data(SIP2_BP, variable=psy_ser);  %data(SIP2_BP, variable=db_cate);
+
+
+
+
+/*check co_men*/
+%macro freq_data(F, N, var_name = );
+* selec the data at baseline;
+/*create the variable with show if patient without comoribidity will write as '1' to run the logistic regression*/
+proc sql; 
+	create table uu_&F.&N.&var_name. as
+	select a.indi_dscm_no,a.FEP_event_cate, a.sex, b.*,
+			case when a.indi_dscm_no = b.indi_dscm_no then b.&var_name. else '1'
+			end as all_&var_name.
+	from u_&F as a
+	left join a.&N as b
+		on a.indi_dscm_no = b.indi_dscm_no
+where FEP_event_cate ne '2_No';
+quit;
+proc sort data=uu_&F.&N.&var_name. out=u2_&F.&N.&var_name.;
+	by indi_dscm_no FEP_event_cate  all_&var_name.;
+
+proc freq data=u2_&F.&N.&var_name.;
+	table all_&var_name.*FEP_event_cate/chisq nocum nocol nopercent;
+run;
+/*by sex*/
+	proc logistic data=u2_&F.&N.&var_name.;
+	class sex (ref = '1') all_&var_name. (ref = '1');
+	model all_&var_name. = sex / link=glogit;
+run;
+/*by event*/
+	proc logistic data=u2_&F.&N.&var_name.;
+	class FEP_event_cate (ref = '1_No') all_&var_name. (ref = '1');
+	model all_&var_name. = FEP_event_cate / link=glogit;
+run;
+%mend freq_data;
+/*1406 no, 838 yes*//*950 no, 1298 yes*/
+/*%freq_data(SIP2, comen_sp,var_name=co_men_sp);*/
+/*%freq_data(SIP2, cosoma_sp,var_name=co_soma_sp);*/
+
+/*%freq_data(SIP2_FEP, comen_sp, var_name=co_men_sp);*/
+/*%freq_data(SIP2_FEP, cosoma_sp, var_name=co_soma_sp);*/
+
+%freq_data(SIP2_BP, comen_sp, var_name=co_men_sp);
+%freq_data(SIP2_BP, cosoma_sp, var_name=co_soma_sp);
+
+/*check specific disabity*/
+%macro db(F);
+proc sql; 
+	create table uu_&F as
+	select indi_dscm_no, FEP_event_cate, sex,
+			case when MAIN_DSB_TYPE ne "" then MAIN_DSB_TYPE else '1'
+			end as all_MAIN_DSB_TYPE
+	from u_&F 
+where FEP_event_cate ne '2_No';
+quit;
+	
+proc freq data=uu_&F;
+	table all_MAIN_DSB_TYPE *sex/chisq nocum nocol nopercent;
+run;
+/*by sex*/
+proc logistic data=uu_&F;
+	class sex (ref = '1') all_MAIN_DSB_TYPE (ref = '1');
+	model all_MAIN_DSB_TYPE = sex / link=glogit;
+run;
+/*by FEP_event_cate*/
+proc logistic data=uu_&F;
+	class FEP_event_cate (ref = '1_No') all_MAIN_DSB_TYPE (ref = '1');
+	model all_MAIN_DSB_TYPE = FEP_event_cate / link=glogit;
+run;
+%mend db;
+/*1406 no, 838 yes*/
+/*%db(SIP2);*/
+/*%db(SIP2_FEP);*/
+%db(SIP2_BP);
