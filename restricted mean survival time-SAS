@@ -1,0 +1,142 @@
+%macro data(F, variable=);
+ods graphics on;
+proc lifetest data=a.&F RMST(tau=1827) plots=(survival(atrisk cl));
+	strata &variable./ diff= control ("F105") adjust=bonferroni;
+	time time*event(0);
+run;
+ods graphics off;
+%mend;
+%data(nocon_u2, variable=final_F);
+
+/*Set the study end point*/
+proc sort data=a.fep_main_0319;
+	by indi_dscm_no date_conver;
+run;
+proc sort data=a.fep_main_0319 nodupkey out=fep_main_0319;
+	by indi_dscm_no ;
+run;
+
+proc sql;
+create table fu_sip2 as
+	select a.*, b.final_FEP, b.date_conver,
+			case when a.INDI_DSCM_NO = b.INDI_DSCM_NO and a.index_date< b.date_conver <= min(a.dth_date,'31DEC2019'd) 
+							then 1 else 0 end as event,
+			case when a.INDI_DSCM_NO = b.INDI_DSCM_NO and calculated event =1 
+							then b.date_conver - a.index_date 
+							else min(a.dth_date,'31DEC2019'd) - a.index_date end as time,
+/*			if event occur create the FEP_event = final_FEP, else FEP_event = 'No';*/
+			case when calculated event =1 
+							then b.final_FEP else 'No' end as FEP_event
+	from fu_days as a
+	left join a.fep_main_0319 as b
+		on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+quit;
+
+proc sort data=fu_sip2;
+	by indi_dscm_no time;
+run;
+proc sort data=fu_sip2 nodupkey out=a.nocon_u3;
+	by indi_dscm_no ;
+run;
+data u_nocon_u3;
+set a.nocon_u3;
+run;
+
+/*KM to calculate the p-value*/
+%macro data(F);
+ods graphics on;
+ods listing close;
+proc lifetest data=u_&F plots=(survival(atrisk cl));
+	time time*event(0);
+	strata final_F;
+	ods output HomTests = pvalue_test_area_u_&F;
+run;
+/*extract the pvalue*/
+data _null_;
+	set pvalue_test_area_u_&F;
+	if Test = 'Log-Rank' then call symput ('p_value', put(ProbChisq, 6.4));
+run;
+/*customize the kaplan meier plot with p_value*/
+ods graphics on;
+ods listing close;
+
+/*Step 5: Perform Kaplan-Meier survival analysis*/
+proc lifetest data=u_&F plots=(survival(atrisk cl));
+	time time*event(0);
+	strata final_F;
+	ods output SurvivalPlot = SurvPlot1_u_&F;
+run;
+
+ODS graphics on/ border=off width=600px height=400px;
+/*Step 6: Customize the Kaplan-Meire plot and save it*/
+PROC SGPLOT data= SurvPlot1_u_&F noborder;
+/*a. Create survival step plot*/
+	STEP x=time y=survival/ group=stratum name="stratum"
+			lineattrs= (thickness =1);
+		/*	Show censored observation*/
+/*			SCATTER x=time y= censored / markerattrs=(symbol=plus size=9) name="Censored";*/
+/*b. Customize x-axis	*/
+	STYLEATTRS datacontrastcolors=(purple cyan gold black red green brown blue pink navy);
+/*	REFLINE 6 17 / axis=x lineattrs=(color=black pattern= dash);*/
+	XAXIS label= 'Time to first episode psychosis conversion'
+			 labelattrs= (size =12pt weight = bold family= "Arial")
+			valueattrs= (size = 11pt )
+			min=0 max=2000 values= (0 to 2000 by 500);
+ 
+	xaxis label= "Time to first episode psychosis conversion"
+		labelattrs= (size =12pt weight = bold family= "Arial")
+		valueattrs= (size = 11pt ) 
+		min=0 max=2000 values= (0 to 2000 by 500);
+	yaxis label= "Probability of conversion"
+		labelattrs= (size =12pt weight = bold family= "Arial")
+		valueattrs= (size = 11pt )
+			min=0 max=1 values= (0 to 1 by 0.25);
+	keylegend "stratum" / title= "Income" 
+	location= outside
+		position=right across=1
+		titleattrs= (size =12pt weight = bold family= "Arial") noborder
+		valueattrs= (size = 11pt );
+		/*add p_value*/
+		inset ('Log-Rank p-value =' = "&p_value") / position=  bottomleft 
+/*			inset ('Log-Rank p-value <' = "0.0001") / position= bottomleft */
+/*		location= outside*/
+		textattrs= (size =10pt family= "Arial") noborder;
+run;
+ODS graphics off;
+%mend;
+%data(nocon_u3);
+
+
+
+proc phreg data= u_nocon_u3;
+class final_F (ref='F105');
+	model time*event(0) = final_F;
+	title "Cox Proportional Hazards Regression Analysis";
+run;
+ods graphics on;
+proc lifetest data=u_nocon_u3 plots=(survival(atrisk cl));
+	time time*event(0);
+	strata final_F;
+run;
+ODS graphics off;
+
+
+proc sql;
+create table u_con_end as
+select a.INDI_DSCM_NO, b.*
+from a.c2_fu_sip2 as a 
+left join a.nocon_u3 as b
+		on a.INDI_DSCM_NO = b.INDI_DSCM_NO;
+quit;
+
+proc phreg data= u_con_end;
+class final_F (ref='F105');
+	model time*event(0) = final_F;
+	title "Cox Proportional Hazards Regression Analysis";
+run;
+ods graphics on;
+proc lifetest data=u_con_end plots=(survival(atrisk cl));
+	time time*event(0);
+	strata final_F;
+run;
+ODS graphics off;
